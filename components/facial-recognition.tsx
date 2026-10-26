@@ -1,0 +1,117 @@
+"use client";
+
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { Camera, CheckCircle2, Loader2, ScanFace, ShieldAlert, Trash2, UserPlus, XCircle } from "lucide-react";
+import { useStore } from "@/lib/store";
+import { createClient } from "@/lib/supabase/client";
+import { uid } from "./ui";
+
+type FaceApi = typeof import("@vladmandic/face-api");
+type Template = { homeownerId: string; descriptor: number[]; enrolledAt: string };
+type Result = { status: "approved" | "denied"; homeownerId?: string; distance?: number; message: string };
+const MATCH_THRESHOLD = 0.55;
+const MODEL_VERSION = "face-api-1.7";
+
+export function FacialRecognitionPage() {
+  const { homeowners, vehicles, addGateLog } = useStore();
+  const supabase = useMemo(() => createClient(), []);
+  const videoRef = useRef<HTMLVideoElement>(null);
+  const streamRef = useRef<MediaStream | null>(null);
+  const apiRef = useRef<FaceApi | null>(null);
+  const [mode, setMode] = useState<"verify" | "enroll">("verify");
+  const [modelsReady, setModelsReady] = useState(false);
+  const [cameraReady, setCameraReady] = useState(false);
+  const [busy, setBusy] = useState(false);
+  const [message, setMessage] = useState("Loading recognition models…");
+  const [selected, setSelected] = useState("");
+  const [consent, setConsent] = useState(false);
+  const [templates, setTemplates] = useState<Template[]>([]);
+  const [result, setResult] = useState<Result | null>(null);
+
+  // Templates are shared across devices through Supabase; RLS limits reads to admin/security and writes to admins.
+  const loadTemplates = useCallback(async () => {
+    const { data, error } = await supabase.from("biometric_templates").select("homeowner_id, descriptor, updated_at");
+    if (error) { setMessage(`Could not load enrolled residents: ${error.message}`); return; }
+    setTemplates((data || []).map(row => ({ homeownerId: row.homeowner_id, descriptor: row.descriptor, enrolledAt: row.updated_at })));
+  }, [supabase]);
+
+  useEffect(() => {
+    void loadTemplates();
+    let active = true;
+    import("@vladmandic/face-api").then(async api => {
+      await Promise.all([
+        api.nets.tinyFaceDetector.loadFromUri("/models"),
+        api.nets.faceLandmark68TinyNet.loadFromUri("/models"),
+        api.nets.faceRecognitionNet.loadFromUri("/models"),
+      ]);
+      if (active) { apiRef.current = api; setModelsReady(true); setMessage("Models ready. Start the camera to continue."); }
+    }).catch(() => active && setMessage("Recognition models could not be loaded. Refresh the page and try again."));
+    return () => { active = false; streamRef.current?.getTracks().forEach(track => track.stop()); };
+  }, [loadTemplates]);
+
+  const startCamera = useCallback(async () => {
+    setResult(null);
+    try {
+      streamRef.current?.getTracks().forEach(track => track.stop());
+      const stream = await navigator.mediaDevices.getUserMedia({ video: { facingMode: "user", width: { ideal: 720 }, height: { ideal: 540 } }, audio: false });
+      streamRef.current = stream;
+      if (videoRef.current) { videoRef.current.srcObject = stream; await videoRef.current.play(); }
+      setCameraReady(true); setMessage("Camera ready. Center one face inside the frame.");
+    } catch { setCameraReady(false); setMessage("Camera access was blocked. Allow camera permission in your browser and try again."); }
+  }, []);
+
+  const stopCamera = () => { streamRef.current?.getTracks().forEach(track => track.stop()); streamRef.current = null; setCameraReady(false); if (videoRef.current) videoRef.current.srcObject = null; };
+  // Convert the live camera frame into a numeric descriptor without saving the source image.
+  const descriptor = async () => {
+    if (!apiRef.current || !videoRef.current) return null;
+    return apiRef.current.detectSingleFace(videoRef.current, new apiRef.current.TinyFaceDetectorOptions({ inputSize: 320, scoreThreshold: 0.5 })).withFaceLandmarks(true).withFaceDescriptor();
+  };
+  const permissionMessage = (text: string) => /row-level security|permission denied/i.test(text) ? "Only administrators can enroll or delete biometric templates." : text;
+
+  const enroll = async () => {
+    if (!selected || !consent) return;
+    setBusy(true); setResult(null); setMessage("Scanning face… Keep still.");
+    try {
+      const detection = await descriptor();
+      if (!detection) { setMessage("No clear face detected. Improve lighting, face the camera, and try again."); return; }
+      const { data: userData } = await supabase.auth.getUser(); const now = new Date().toISOString();
+      const { error } = await supabase.from("biometric_templates").upsert({ homeowner_id: selected, descriptor: Array.from(detection.descriptor), model_version: MODEL_VERSION, consented_at: now, consent_recorded_by: userData.user?.id || null, updated_at: now }, { onConflict: "homeowner_id" });
+      if (error) { setMessage(permissionMessage(error.message)); return; }
+      await loadTemplates(); const person = homeowners.find(x => x.id === selected);
+      setResult({ status: "approved", homeownerId: selected, message: `${person?.firstName} ${person?.lastName} was enrolled successfully.` });
+      setMessage("Enrollment complete. Only the numeric face template was saved; no photo was retained.");
+    } finally { setBusy(false); }
+  };
+
+  const verify = async () => {
+    setBusy(true); setResult(null); setMessage("Comparing face with enrolled residents…");
+    try {
+      const detection = await descriptor();
+      if (!detection) { setMessage("No clear face detected. Only one person should be visible."); return; }
+      if (!templates.length) { setMessage("No residents are enrolled yet. Use Enrollment first."); return; }
+      const api = apiRef.current!;
+      const matches = templates.map(t => ({ template: t, distance: api.euclideanDistance(detection.descriptor, new Float32Array(t.descriptor)) })).sort((a,b) => a.distance-b.distance);
+      const best = matches[0]; const matched = best.distance <= MATCH_THRESHOLD; const person = matched ? homeowners.find(x => x.id === best.template.homeownerId) : undefined;
+      const status = person?.status === "active" ? "approved" : "denied";
+      const message = status === "approved" ? `Identity verified: ${person!.firstName} ${person!.lastName}` : person ? "Identity matched, but the resident account is inactive." : "Face is not recognized as an enrolled resident.";
+      setResult({ status, homeownerId: person?.id, distance: best.distance, message }); setMessage(message);
+      const vehicle = person ? vehicles.find(v => v.homeownerId === person.id) : undefined;
+      addGateLog({ id: uid(), homeownerId: person?.id, vehicleId: vehicle?.id, resident: person ? `${person.firstName} ${person.lastName}` : "Unrecognized visitor", vehicle: vehicle ? `${vehicle.brand} ${vehicle.model}` : "—", plateNumber: vehicle?.plateNumber || "—", verificationType: "Facial Recognition", status, verifiedBy: "Facial Recognition Kiosk", createdAt: new Date().toISOString() });
+    } finally { setBusy(false); }
+  };
+
+  const remove = async (homeownerId: string) => {
+    if (!confirm("Remove this resident’s biometric template?")) return;
+    // RLS silently skips rows a non-admin may not delete, so ask for the deleted row back to confirm.
+    const { data, error } = await supabase.from("biometric_templates").delete().eq("homeowner_id", homeownerId).select("id");
+    if (error || !data?.length) { setMessage(permissionMessage(error?.message || "permission denied")); return; }
+    await loadTemplates(); setMessage("Biometric template deleted.");
+  };
+  const matchedPerson = result?.homeownerId ? homeowners.find(x => x.id === result.homeownerId) : undefined;
+
+  return <div className="space-y-6"><div className="flex flex-col justify-between gap-4 sm:flex-row sm:items-end"><div><p className="text-sm text-slate-500">On-device identity verification for registered residents.</p><p className="mt-1 text-xs text-slate-400">Biometric templates are shared securely with authorized staff devices. Camera images are processed in memory and discarded.</p></div><div className="flex rounded-xl border border-slate-200 bg-white p-1"><button className={`rounded-lg px-4 py-2 text-sm font-semibold ${mode==="verify"?"bg-emerald-700 text-white":"text-slate-500"}`} onClick={()=>{setMode("verify");setResult(null)}}><ScanFace className="mr-2 inline h-4 w-4"/>Gate verification</button><button className={`rounded-lg px-4 py-2 text-sm font-semibold ${mode==="enroll"?"bg-emerald-700 text-white":"text-slate-500"}`} onClick={()=>{setMode("enroll");setResult(null)}}><UserPlus className="mr-2 inline h-4 w-4"/>Enrollment</button></div></div><div className="rounded-xl border border-amber-200 bg-amber-50 p-4 text-sm leading-6 text-amber-900"><b>Biometric privacy:</b> Face photos are never saved. The camera frame is converted in memory into a numeric face descriptor, then the frame is discarded. Descriptors are stored in the association’s secured database, readable only by administrators and security staff and changeable only by administrators. Each enrollment records when consent was given and which administrator recorded it. Use “Delete biometric template” to remove a resident’s descriptor from every device.</div>
+    <div className="grid gap-6 xl:grid-cols-[1.4fr_.8fr]"><section className="card overflow-hidden"><div className="relative aspect-[4/3] bg-slate-950"><video ref={videoRef} muted playsInline className={`h-full w-full object-cover -scale-x-100 ${cameraReady?"":"hidden"}`}/>{!cameraReady&&<div className="absolute inset-0 flex flex-col items-center justify-center p-8 text-center text-white"><div className="rounded-full bg-white/10 p-5"><Camera className="h-10 w-10 text-emerald-300"/></div><h3 className="mt-4 text-lg font-bold">Camera is off</h3><p className="mt-2 max-w-sm text-sm text-slate-400">Camera access requires localhost or a secure HTTPS connection.</p></div>}{cameraReady&&<div className="pointer-events-none absolute inset-[12%] rounded-[45%] border-2 border-emerald-400/80 shadow-[0_0_0_999px_rgba(2,6,23,.28)]"/>}{busy&&<div className="absolute inset-0 flex items-center justify-center bg-slate-950/55 text-white"><Loader2 className="mr-3 h-7 w-7 animate-spin"/><b>Processing on this device…</b></div>}</div><div className="border-t border-slate-100 p-5"><div className="flex items-start gap-3 rounded-lg bg-slate-50 p-3 text-sm text-slate-600">{modelsReady?<CheckCircle2 className="mt-0.5 h-4 w-4 shrink-0 text-emerald-600"/>:<Loader2 className="mt-0.5 h-4 w-4 shrink-0 animate-spin text-emerald-600"/>}<p>{message}</p></div><div className="mt-4 flex flex-wrap gap-3">{!cameraReady?<button disabled={!modelsReady} className="btn-primary" onClick={startCamera}><Camera className="h-4 w-4"/>Start camera</button>:<><button className="btn-secondary" onClick={stopCamera}>Stop camera</button>{mode==="verify"&&<button disabled={busy||!templates.length} className="btn-primary" onClick={verify}><ScanFace className="h-4 w-4"/>Verify identity</button>}</>}</div></div></section>
+      <aside className="space-y-5">{mode==="enroll"?<div className="card p-5"><h3 className="font-bold">Enroll a resident</h3><p className="mt-1 text-xs leading-5 text-slate-500">The resident must provide consent before a biometric template is created.</p><label className="mt-5 block"><span className="label">Resident</span><select className="field" value={selected} onChange={e=>setSelected(e.target.value)}><option value="">Select homeowner</option>{homeowners.filter(h=>h.status==="active").map(h=><option value={h.id} key={h.id}>{h.firstName} {h.lastName} — B{h.block} L{h.lot}</option>)}</select></label><label className="mt-4 flex items-start gap-3 rounded-lg border border-slate-200 p-3 text-xs leading-5 text-slate-600"><input type="checkbox" className="mt-1 accent-emerald-700" checked={consent} onChange={e=>setConsent(e.target.checked)}/><span>I confirm that the resident has voluntarily consented to biometric enrollment and understands they may request deletion.</span></label><button disabled={!cameraReady||!selected||!consent||busy} className="btn-primary mt-4 w-full" onClick={enroll}><UserPlus className="h-4 w-4"/>Capture and enroll</button></div>:<div className={`card p-6 text-center ${result?.status==="approved"?"border-emerald-300":result?.status==="denied"?"border-rose-300":""}`}>{!result?<><div className="mx-auto w-fit rounded-full bg-emerald-50 p-4 text-emerald-700"><ScanFace className="h-9 w-9"/></div><h3 className="mt-4 font-bold">Ready to verify</h3><p className="mt-2 text-sm text-slate-500">{templates.length} resident{templates.length===1?"":"s"} enrolled.</p></>:<><div className={`mx-auto w-fit rounded-full p-4 ${result.status==="approved"?"bg-emerald-50 text-emerald-600":"bg-rose-50 text-rose-600"}`}>{result.status==="approved"?<CheckCircle2 className="h-9 w-9"/>:<XCircle className="h-9 w-9"/>}</div><p className={`mt-4 text-xs font-bold uppercase tracking-[.18em] ${result.status==="approved"?"text-emerald-600":"text-rose-600"}`}>Access {result.status}</p>{matchedPerson&&<h3 className="mt-2 text-xl font-bold">{matchedPerson.firstName} {matchedPerson.lastName}</h3>}<p className="mt-2 text-sm text-slate-500">{result.message}</p>{result.distance!==undefined&&<p className="mt-3 text-xs text-slate-400">Match distance: {result.distance.toFixed(3)} · threshold {MATCH_THRESHOLD}</p>}</>}</div>}
+        <div className="card p-5"><div className="flex items-center justify-between"><h3 className="font-bold">Enrolled residents</h3><span className="rounded-full bg-slate-100 px-2.5 py-1 text-xs font-bold text-slate-600">{templates.length}</span></div><div className="mt-3 divide-y divide-slate-100">{templates.length?templates.map(t=>{const h=homeowners.find(x=>x.id===t.homeownerId);return <div className="flex items-center justify-between py-3" key={t.homeownerId}><div><p className="text-sm font-semibold">{h?`${h.firstName} ${h.lastName}`:"Deleted resident"}</p><p className="text-[11px] text-slate-400">Enrolled {new Date(t.enrolledAt).toLocaleDateString()}</p></div><button className="rounded-lg p-2 text-rose-500 hover:bg-rose-50" onClick={()=>remove(t.homeownerId)} title="Delete biometric template"><Trash2 className="h-4 w-4"/></button></div>}):<div className="py-6 text-center text-xs text-slate-400"><ShieldAlert className="mx-auto mb-2 h-5 w-5"/>No biometric templates yet.</div>}</div></div>
+      </aside></div></div>;
+}
