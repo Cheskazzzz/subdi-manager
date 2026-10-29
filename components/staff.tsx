@@ -3,7 +3,7 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { KeyRound, Plus, ShieldCheck, Trash2, UserCog } from "lucide-react";
 import { createClient } from "@/lib/supabase/client";
-import { Badge, Empty, FormPreview, Modal, PreviewState } from "./ui";
+import { Badge, Empty, FormPreview, Modal, Pagination, PreviewState, usePagination } from "./ui";
 
 type StaffRole = "admin" | "security";
 type Staff = { id: string; email: string; firstName: string; lastName: string; role: StaffRole; superAdmin: boolean; mustChange: boolean };
@@ -21,6 +21,7 @@ export function StaffPage() {
   const [message, setMessage] = useState("");
   const [preview, setPreview] = useState<PreviewState | null>(null);
   const [saving, setSaving] = useState(false);
+  const pager = usePagination(staff);
 
   const load = useCallback(async () => {
     const { data, error } = await supabase.from("profiles").select("id,email,first_name,last_name,role,is_super_admin,must_change_password,created_at").in("role", ["admin", "security"]).order("created_at");
@@ -76,13 +77,13 @@ export function StaffPage() {
   return <div className="space-y-6">
     <div className="flex flex-col justify-between gap-4 sm:flex-row sm:items-end"><div><p className="text-sm text-slate-500">Create admin and security accounts. Each person gets their own email and a default password they must change on first sign-in.</p><div className="mt-3 inline-flex items-center gap-2 rounded-lg bg-emerald-50 px-3 py-2 text-sm font-semibold text-emerald-700"><UserCog className="h-4 w-4"/>{staff.length} staff account{staff.length === 1 ? "" : "s"}</div></div><button className="btn-primary" onClick={() => { setMessage(""); setAdding(true); }}><Plus className="h-4 w-4"/>Add staff account</button></div>
     {message && <div className="rounded-lg bg-slate-100 p-3 text-sm text-slate-700">{message}</div>}
-    {loading ? <Empty message="Loading staff accounts…"/> : staff.length ? <div className="table-wrap"><table className="data-table"><thead><tr><th>Name</th><th>Email</th><th>Role</th><th>Password</th><th></th></tr></thead><tbody>{staff.map(person => <tr key={person.id}>
+    {loading ? <Empty message="Loading staff accounts…"/> : staff.length ? <><div className="table-wrap"><table className="data-table"><thead><tr><th>Name</th><th>Email</th><th>Role</th><th>Password</th><th></th></tr></thead><tbody>{pager.pageItems.map(person => <tr key={person.id}>
       <td><div className="font-semibold text-slate-900">{person.firstName} {person.lastName}</div>{person.superAdmin && <div className="mt-0.5 inline-flex items-center gap-1 text-xs font-semibold text-emerald-700"><ShieldCheck className="h-3.5 w-3.5"/>Super admin</div>}</td>
       <td>{person.email}</td>
       <td>{person.superAdmin ? "Admin" : <select className="field max-w-36 py-1.5" value={person.role} onChange={e => void changeRole(person, e.target.value as StaffRole)}><option value="admin">Admin</option><option value="security">Security</option></select>}</td>
       <td><Badge value={person.mustChange ? "Default password" : "Active"}/></td>
       <td>{!person.superAdmin && <div className="flex justify-end gap-1"><button className="rounded p-2 text-slate-500 hover:bg-slate-100" title="Reset to a new default password" onClick={() => void resetPassword(person)}><KeyRound className="h-4 w-4"/></button><button className="rounded p-2 text-rose-500 hover:bg-rose-50" title="Remove account" onClick={() => void remove(person)}><Trash2 className="h-4 w-4"/></button></div>}</td>
-    </tr>)}</tbody></table></div> : <Empty message="No staff accounts yet."/>}
+    </tr>)}</tbody></table></div><Pagination pager={pager}/></> : <Empty message="No staff accounts yet."/>}
     {adding && <Modal title="Add staff account" onClose={() => setAdding(false)}><form onSubmit={create} className="grid gap-4 sm:grid-cols-2">
       <label><span className="label">First name</span><input required className="field" name="firstName"/></label>
       <label><span className="label">Last name</span><input required className="field" name="lastName"/></label>

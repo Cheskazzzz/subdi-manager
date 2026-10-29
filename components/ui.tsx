@@ -1,7 +1,7 @@
 "use client";
 
-import { ReactNode } from "react";
-import { Search, X } from "lucide-react";
+import { ReactNode, useEffect, useState } from "react";
+import { ChevronLeft, ChevronRight, Search, X } from "lucide-react";
 
 export function Badge({ value }: { value: string }) {
   const good = ["active", "approved", "published"].includes(value.toLowerCase());
@@ -48,4 +48,53 @@ export function FormPreview({ preview, onClose, busy = false }: { preview: Previ
       <button type="button" className="btn-primary" disabled={busy} onClick={() => void preview.onConfirm()}>{busy ? "Submitting…" : preview.confirmLabel ?? "Confirm & submit"}</button>
     </div>
   </Modal>;
+}
+
+// ---- Pagination: every list shows 10 records per page ----
+export const PAGE_SIZE = 10;
+
+export function usePagination<T>(items: T[], resetKey = "") {
+  const [requested, setRequested] = useState(1);
+  // Searching or filtering starts again from page 1.
+  useEffect(() => { setRequested(1); }, [resetKey]);
+  const totalPages = Math.max(1, Math.ceil(items.length / PAGE_SIZE));
+  const page = Math.min(requested, totalPages);
+  const start = (page - 1) * PAGE_SIZE;
+  return { page, setPage: setRequested, totalPages, total: items.length, start, pageItems: items.slice(start, start + PAGE_SIZE) };
+}
+
+export type PagerState = { page: number; setPage: (page: number) => void; totalPages: number; total: number; start: number; pageItems: readonly unknown[] };
+
+function pageNumbers(page: number, totalPages: number): (number | "…")[] {
+  if (totalPages <= 7) return Array.from({ length: totalPages }, (_, i) => i + 1);
+  const wanted = Array.from(new Set([1, totalPages, page - 1, page, page + 1])).filter(n => n >= 1 && n <= totalPages).sort((a, b) => a - b);
+  const out: (number | "…")[] = [];
+  wanted.forEach((n, i) => { if (i > 0 && n - wanted[i - 1] > 1) out.push("…"); out.push(n); });
+  return out;
+}
+
+export function Pagination({ pager, compact = false }: { pager: PagerState; compact?: boolean }) {
+  const { page, setPage, totalPages, total, start, pageItems } = pager;
+  if (!total) return null;
+  const from = start + 1;
+  const to = start + pageItems.length;
+  const arrow = "btn-secondary px-3 py-2 disabled:cursor-not-allowed disabled:opacity-50";
+  if (compact) return <div className="mt-3 flex items-center justify-between gap-2 text-xs text-slate-500">
+    <span>{from}–{to} of {total}</span>
+    <div className="flex items-center gap-2">
+      <button type="button" className={arrow} disabled={page <= 1} onClick={() => setPage(page - 1)} aria-label="Previous page"><ChevronLeft className="h-4 w-4"/></button>
+      <span>Page {page} of {totalPages}</span>
+      <button type="button" className={arrow} disabled={page >= totalPages} onClick={() => setPage(page + 1)} aria-label="Next page"><ChevronRight className="h-4 w-4"/></button>
+    </div>
+  </div>;
+  return <div className="mt-4 flex flex-col items-center justify-between gap-3 sm:flex-row">
+    <p className="text-sm text-slate-500">Showing {from}–{to} of {total} record{total === 1 ? "" : "s"}</p>
+    <nav aria-label="Pagination" className="flex flex-wrap items-center justify-center gap-1">
+      <button type="button" className={arrow} disabled={page <= 1} onClick={() => setPage(page - 1)}><ChevronLeft className="h-4 w-4"/>Previous</button>
+      {pageNumbers(page, totalPages).map((n, i) => n === "…"
+        ? <span key={`gap-${i}`} className="px-2 text-slate-400">…</span>
+        : <button key={n} type="button" aria-current={n === page ? "page" : undefined} onClick={() => setPage(n)} className={`h-9 min-w-9 rounded-lg px-3 text-sm font-semibold ${n === page ? "bg-emerald-700 text-white" : "text-slate-600 hover:bg-slate-100"}`}>{n}</button>)}
+      <button type="button" className={arrow} disabled={page >= totalPages} onClick={() => setPage(page + 1)}>Next<ChevronRight className="h-4 w-4"/></button>
+    </nav>
+  </div>;
 }
