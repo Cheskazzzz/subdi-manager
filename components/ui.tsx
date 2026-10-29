@@ -98,3 +98,51 @@ export function Pagination({ pager, compact = false }: { pager: PagerState; comp
     </nav>
   </div>;
 }
+
+// ---- Date filter: a dropdown of ready-made ranges, plus a custom From / To range ----
+export type DateFilterValue = { preset: string; from: string; to: string };
+export const noDateFilter: DateFilterValue = { preset: "all", from: "", to: "" };
+export const dateKey = (f: DateFilterValue) => `${f.preset}|${f.from}|${f.to}`;
+
+const DATE_PRESETS: [string, string][] = [["today", "Today"], ["last7", "Last 7 days"], ["last30", "Last 30 days"], ["next7", "Next 7 days"], ["next30", "Next 30 days"], ["month", "This month"], ["year", "This year"], ["custom", "Custom range…"]];
+const ymd = (d: Date) => `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
+const shiftDays = (d: Date, n: number) => { const c = new Date(d); c.setDate(c.getDate() + n); return c; };
+
+// The inclusive [from, to] days a filter covers, as YYYY-MM-DD ("" = no limit), or null when no filter is active.
+function dateRange(f: DateFilterValue, now: Date = new Date()): [string, string] | null {
+  const today = ymd(now);
+  switch (f.preset) {
+    case "today": return [today, today];
+    case "last7": return [ymd(shiftDays(now, -6)), today];
+    case "last30": return [ymd(shiftDays(now, -29)), today];
+    case "next7": return [today, ymd(shiftDays(now, 6))];
+    case "next30": return [today, ymd(shiftDays(now, 29))];
+    case "month": return [ymd(new Date(now.getFullYear(), now.getMonth(), 1)), ymd(new Date(now.getFullYear(), now.getMonth() + 1, 0))];
+    case "year": return [`${now.getFullYear()}-01-01`, `${now.getFullYear()}-12-31`];
+    case "custom": return f.from || f.to ? [f.from, f.to] : null;
+    default: return null;
+  }
+}
+
+// True when the record's date (a YYYY-MM-DD day or a full timestamp) falls inside the chosen range.
+export function matchesDate(value: string | undefined, f: DateFilterValue, now: Date = new Date()): boolean {
+  const range = dateRange(f, now);
+  if (!range) return true;
+  if (!value) return false;
+  const day = value.length === 10 ? value : ymd(new Date(value));
+  return (!range[0] || day >= range[0]) && (!range[1] || day <= range[1]);
+}
+
+export function DateFilter({ value, onChange, allLabel = "All dates", label = "date" }: { value: DateFilterValue; onChange: (value: DateFilterValue) => void; allLabel?: string; label?: string }) {
+  return <div className="flex flex-col gap-3 sm:flex-row sm:items-center">
+    <select aria-label={`Filter by ${label}`} className="field max-w-48" value={value.preset} onChange={e => onChange({ ...value, preset: e.target.value })}>
+      <option value="all">{allLabel}</option>
+      {DATE_PRESETS.map(([id, text]) => <option key={id} value={id}>{text}</option>)}
+    </select>
+    {value.preset === "custom" && <div className="flex items-center gap-2">
+      <input type="date" aria-label="From date" className="field w-40" value={value.from} max={value.to || undefined} onChange={e => onChange({ ...value, from: e.target.value })}/>
+      <span className="text-xs text-slate-500">to</span>
+      <input type="date" aria-label="To date" className="field w-40" value={value.to} min={value.from || undefined} onChange={e => onChange({ ...value, to: e.target.value })}/>
+    </div>}
+  </div>;
+}
