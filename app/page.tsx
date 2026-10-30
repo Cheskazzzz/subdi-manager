@@ -14,6 +14,7 @@ import { ProfilePage } from "@/components/profile";
 import { StaffPage } from "@/components/staff";
 import { ChangePassword } from "@/components/change-password";
 import { createClient } from "@/lib/supabase/client";
+import { UnreadProvider } from "@/lib/unread";
 
 const IDLE_LIMIT_MS=20*60*1000;const ACTIVITY_KEY="iv-last-activity";const EXPIRED_NOTICE="You were signed out after 20 minutes of inactivity. Please sign in again.";
 // Last activity is shared across tabs, so working in one tab keeps the others signed in.
@@ -40,9 +41,9 @@ function App(){
     const events=["mousemove","mousedown","keydown","scroll","touchstart","wheel"];events.forEach(e=>window.addEventListener(e,touch,{passive:true}));
     const onVisible=()=>{if(document.visibilityState==="visible")check()};document.addEventListener("visibilitychange",onVisible);const timer=window.setInterval(check,30000);
     return()=>{events.forEach(e=>window.removeEventListener(e,touch));document.removeEventListener("visibilitychange",onVisible);window.clearInterval(timer)}},[role,supabase]);
-  const [account,setAccount]=useState<{name:string;superAdmin:boolean;mustChangePassword:boolean}|null>(null);
+  const [account,setAccount]=useState<{id:string;name:string;superAdmin:boolean;mustChangePassword:boolean}|null>(null);
   // Load the signed-in account's name and staff flags (super admin, default password still in use).
-  useEffect(()=>{if(!role){setAccount(null);return}void(async()=>{const {data}=await supabase.auth.getUser();if(!data.user)return;const {data:profile}=await supabase.from("profiles").select("first_name,last_name,email").eq("id",data.user.id).single();const {data:flags}=await supabase.from("profiles").select("is_super_admin,must_change_password").eq("id",data.user.id).single();setAccount({name:`${profile?.first_name??""} ${profile?.last_name??""}`.trim()||profile?.email||"",superAdmin:!!flags?.is_super_admin,mustChangePassword:role!=="homeowner"&&!!flags?.must_change_password})})();},[role,supabase]);
+  useEffect(()=>{if(!role){setAccount(null);return}void(async()=>{const {data}=await supabase.auth.getUser();if(!data.user)return;const {data:profile}=await supabase.from("profiles").select("first_name,last_name,email").eq("id",data.user.id).single();const {data:flags}=await supabase.from("profiles").select("is_super_admin,must_change_password").eq("id",data.user.id).single();setAccount({id:data.user.id,name:`${profile?.first_name??""} ${profile?.last_name??""}`.trim()||profile?.email||"",superAdmin:!!flags?.is_super_admin,mustChangePassword:role!=="homeowner"&&!!flags?.must_change_password})})();},[role,supabase]);
   const login=(nextRole:Role)=>{setNotice("");setRole(nextRole);setPage(nextRole==="security"?"verify":"dashboard")};
   const logout=async()=>{await supabase.auth.signOut();setRole(null)};
   if(checking)return <main className="flex min-h-screen items-center justify-center text-sm text-slate-500">Loading Isabel Village…</main>;
@@ -50,6 +51,6 @@ function App(){
   if(!role)return <Login onLogin={login} notice={notice}/>;
   if(!account)return <main className="flex min-h-screen items-center justify-center text-sm text-slate-500">Loading Isabel Village…</main>;
   if(account.mustChangePassword)return <ChangePassword onDone={()=>setAccount({...account,mustChangePassword:false})} onLogout={()=>{void logout()}}/>;
-  return <Shell role={role} name={account.name} superAdmin={account.superAdmin} page={page} setPage={setPage} logout={()=>{void logout()}}><Page role={role} page={page} superAdmin={account.superAdmin}/></Shell>
+  return <UnreadProvider userId={account.id} enabled={role==="homeowner"}><Shell role={role} name={account.name} superAdmin={account.superAdmin} page={page} setPage={setPage} logout={()=>{void logout()}}><Page role={role} page={page} superAdmin={account.superAdmin}/></Shell></UnreadProvider>
 }
 function Page({role,page,superAdmin}:{role:Role;page:PageKey;superAdmin:boolean}){switch(page){case"dashboard":return role==="homeowner"?<ResidentDashboard/>:<AdminDashboard/>;case"homeowners":return <HomeownersPage/>;case"vehicles":return <VehiclesPage/>;case"verify":return <VerifyPage/>;case"logs":return <GateLogsPage/>;case"announcements":return <AnnouncementsPage role={role}/>;case"events":return <EventsPage role={role}/>;case"facial":return <FacialRecognitionPage/>;case"profile":return <ProfilePage/>;case"my-vehicles":return <MyVehicles/>;case"staff":return superAdmin?<StaffPage/>:null;default:return null}}
