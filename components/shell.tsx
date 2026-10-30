@@ -2,6 +2,7 @@
 
 import { Role } from "@/lib/types";
 import { useState } from "react";
+import { useUnread } from "@/lib/unread";
 import { Building2, CalendarDays, Car, ClipboardList, Home, LayoutDashboard, LogOut, Megaphone, Menu, ScanFace, ShieldCheck, UserCog, UserRound, Users, X } from "lucide-react";
 
 export type PageKey = "dashboard" | "homeowners" | "vehicles" | "verify" | "logs" | "announcements" | "events" | "facial" | "profile" | "my-vehicles" | "staff";
@@ -20,12 +21,12 @@ const allItems: { key: PageKey; label: string; icon: typeof Home; roles: Role[];
 ];
 
 export function Shell({ role, name, superAdmin, page, setPage, logout, children }: { role: Role; name: string; superAdmin: boolean; page: PageKey; setPage: (p: PageKey) => void; logout: () => void; children: React.ReactNode }) {
-  const [open, setOpen] = useState(false); const items = allItems.filter(x => x.roles.includes(role) && (!x.superAdminOnly || superAdmin)); const active = items.find(x => x.key === page);
+  const [open, setOpen] = useState(false); const { counts } = useUnread(); const badgeFor = (key: PageKey) => key === "announcements" ? counts.announcements : key === "events" ? counts.events : 0; const items = allItems.filter(x => x.roles.includes(role) && (!x.superAdminOnly || superAdmin)); const active = items.find(x => x.key === page);
   // Name comes from the signed-in account's profile; fall back to the role while it loads.
   const displayName = name || role;
   const sidebar = <aside className="flex h-full w-64 flex-col bg-[#123d2a] text-white">
     <div className="flex h-20 items-center gap-3 border-b border-white/10 px-5"><div className="rounded-xl bg-emerald-500 p-2"><Building2 className="h-6 w-6"/></div><div><div className="font-bold">Isabel Village</div><div className="text-xs text-emerald-100/70">Community Manager</div></div></div>
-    <nav className="flex-1 space-y-1 overflow-y-auto p-3">{items.map(item => <button key={item.key} onClick={() => { setPage(item.key); setOpen(false); }} className={`flex w-full items-center gap-3 rounded-lg px-3 py-2.5 text-sm transition ${page === item.key ? "bg-white text-emerald-900 shadow-sm" : "text-emerald-50/80 hover:bg-white/10 hover:text-white"}`}><item.icon className="h-4.5 w-4.5"/><span>{item.label}</span></button>)}</nav>
+    <nav className="flex-1 space-y-1 overflow-y-auto p-3">{items.map(item => { const badge = badgeFor(item.key); const hasNew = badge > 0 && page !== item.key; return <button key={item.key} onClick={() => { setPage(item.key); setOpen(false); }} className={`flex w-full items-center gap-3 rounded-lg px-3 py-2.5 text-sm transition ${page === item.key ? "bg-white text-emerald-900 shadow-sm" : hasNew ? "bg-amber-400/25 font-semibold text-amber-50 ring-1 ring-amber-300/60 hover:bg-amber-400/35" : "text-emerald-50/80 hover:bg-white/10 hover:text-white"}`}><item.icon className="h-4.5 w-4.5"/><span>{item.label}</span>{badge > 0 && <span aria-label={`${badge} new`} className="ml-auto inline-flex min-w-[1.5rem] items-center justify-center rounded-full bg-amber-400 px-2 py-0.5 text-xs font-bold text-amber-950 animate-pulse">[{badge}]</span>}</button>; })}</nav>
     <div className="border-t border-white/10 p-3"><div className="mb-2 flex items-center gap-3 px-3 py-2"><div className="flex h-9 w-9 items-center justify-center rounded-full bg-emerald-500 font-bold">{displayName[0]}</div><div><div className="text-sm font-semibold capitalize">{displayName}</div><div className="text-xs capitalize text-emerald-100/60">{superAdmin ? "Super admin" : role}</div></div></div><button onClick={logout} className="flex w-full items-center gap-3 rounded-lg px-3 py-2 text-sm text-emerald-50/80 hover:bg-white/10"><LogOut className="h-4 w-4"/>Log out</button></div>
   </aside>;
   return <div className="min-h-screen lg:flex"><div className="hidden lg:fixed lg:inset-y-0 lg:block">{sidebar}</div>{open && <div className="fixed inset-0 z-40 bg-slate-950/40 lg:hidden"><div className="h-full">{sidebar}</div><button className="absolute left-[17rem] top-5 rounded-lg bg-white p-2" onClick={() => setOpen(false)}><X className="h-5 w-5"/></button></div>}
