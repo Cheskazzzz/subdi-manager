@@ -53,7 +53,14 @@ export function passwordError(value: string) {
 export type ResidentDetails = { firstName: string; lastName: string; email: string; phone: string; block: string; lot: string };
 
 // Returns the first problem found, or null when every field is valid.
-export function residentError(details: ResidentDetails) {
-  return nameError("First name", details.firstName) || nameError("Last name", details.lastName) || emailError(details.email)
+export function residentError(details: ResidentDetails, requireEmail = true) {
+  return nameError("First name", details.firstName) || nameError("Last name", details.lastName) || (requireEmail ? emailError(details.email) : null)
     || phoneError(details.phone) || unitError("Block", details.block) || unitError("Lot", details.lot);
 }
+
+// A resident who registers with a phone number only has no real email. The database gives the account an
+// email-shaped placeholder built from the phone number (see supabase/phone-registration.sql). It is never
+// used to send mail, so the screens show "No email (phone only)" instead of it.
+export const PHONE_ONLY_DOMAIN = "phone.isabelvillage.invalid";
+export const isPhoneOnlyEmail = (email: string) => email.toLowerCase().endsWith(`@${PHONE_ONLY_DOMAIN}`);
+export const showEmail = (email: string) => (isPhoneOnlyEmail(email) ? "No email (phone only)" : email);
