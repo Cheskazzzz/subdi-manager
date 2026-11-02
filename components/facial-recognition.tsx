@@ -55,7 +55,7 @@ function assess(frame: Frame, found: Found[]): QualityReport {
 }
 
 export function FacialRecognitionPage() {
-  const { homeowners, vehicles, addGateLog } = useStore();
+  const { homeowners, vehicles, addGateLog, notify } = useStore();
   const supabase = useMemo(() => createClient(), []);
   const videoRef = useRef<HTMLVideoElement>(null);
   const streamRef = useRef<MediaStream | null>(null);
@@ -181,8 +181,9 @@ export function FacialRecognitionPage() {
     try {
       const { data: userData } = await supabase.auth.getUser(); const now = new Date().toISOString();
       const { error } = await supabase.from("biometric_templates").upsert({ homeowner_id: pending.homeownerId, descriptor: pending.descriptor, model_version: MODEL_VERSION, consented_at: now, consent_recorded_by: userData.user?.id || null, updated_at: now }, { onConflict: "homeowner_id" });
-      if (error) { setMessage(permissionMessage(error.message)); return; }
+      if (error) { setMessage(permissionMessage(error.message)); notify("error", `Could not enroll the resident. ${permissionMessage(error.message)}`); return; }
       const person = homeowners.find(x => x.id === pending.homeownerId);
+      notify("success", `${person?.firstName} ${person?.lastName} was enrolled for facial recognition.`);
       setPending(null); await loadTemplates();
       setResult({ status: "approved", homeownerId: pending.homeownerId, message: `${person?.firstName} ${person?.lastName} was enrolled successfully.` });
       setMessage(`Enrollment complete. ${ENROLL_FRAMES} clear frames were averaged into one numeric template. The review photo was discarded; no photo was retained.`);
@@ -216,8 +217,8 @@ export function FacialRecognitionPage() {
     if (!confirm("Remove this resident’s biometric template?")) return;
     // RLS silently skips rows a non-admin may not delete, so ask for the deleted row back to confirm.
     const { data, error } = await supabase.from("biometric_templates").delete().eq("homeowner_id", homeownerId).select("id");
-    if (error || !data?.length) { setMessage(permissionMessage(error?.message || "permission denied")); return; }
-    await loadTemplates(); setMessage("Biometric template deleted.");
+    if (error || !data?.length) { const reason = permissionMessage(error?.message || "permission denied"); setMessage(reason); notify("error", `Could not delete the biometric template. ${reason}`); return; }
+    await loadTemplates(); setMessage("Biometric template deleted."); notify("success", "The biometric template was deleted.");
   };
   const matchedPerson = result?.homeownerId ? homeowners.find(x => x.id === result.homeownerId) : undefined;
 

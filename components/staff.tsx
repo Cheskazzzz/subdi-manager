@@ -3,6 +3,8 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { KeyRound, Plus, ShieldCheck, Trash2, UserCog } from "lucide-react";
 import { createClient } from "@/lib/supabase/client";
+import { useStore } from "@/lib/store";
+import { passwordError } from "@/lib/validation";
 import { Badge, Empty, FormPreview, Modal, Pagination, PreviewState, usePagination } from "./ui";
 
 type StaffRole = "admin" | "security";
@@ -21,6 +23,7 @@ export function StaffPage() {
   const [message, setMessage] = useState("");
   const [preview, setPreview] = useState<PreviewState | null>(null);
   const [saving, setSaving] = useState(false);
+  const { notify } = useStore();
   const pager = usePagination(staff);
 
   const load = useCallback(async () => {
@@ -35,6 +38,8 @@ export function StaffPage() {
   const create = (e: React.FormEvent<HTMLFormElement>) => {
     e.preventDefault(); const f = new FormData(e.currentTarget);
     const account = { email: String(f.get("email")).trim().toLowerCase(), password: String(f.get("password")), firstName: String(f.get("firstName")), lastName: String(f.get("lastName")), role: String(f.get("role")) };
+    const problem = passwordError(account.password);
+    if (problem) { setMessage(problem); notify("error", problem); return; }
     setMessage("");
     setPreview({
       title: "Review new staff account",
@@ -55,23 +60,26 @@ export function StaffPage() {
     setSaving(true);
     const { error } = await supabase.rpc("create_staff_account", { p_email: account.email, p_password: account.password, p_first_name: account.firstName, p_last_name: account.lastName, p_role: account.role });
     setSaving(false); setPreview(null);
-    if (error) { setMessage(error.message); return; }
+    if (error) { setMessage(error.message); notify("error", `Could not create the staff account. ${error.message}`); return; }
+    notify("success", `${account.firstName} ${account.lastName}'s staff account was created.`);
     setAdding(false); setMessage(""); setHandover({ title: "Staff account created", email: account.email, password: account.password }); await load();
   };
   const changeRole = async (person: Staff, role: StaffRole) => {
     const { error } = await supabase.rpc("update_staff_role", { p_user_id: person.id, p_role: role });
-    setMessage(error ? error.message : `${person.firstName} ${person.lastName} is now ${role === "admin" ? "an admin" : "security staff"}.`); await load();
+    const done = `${person.firstName} ${person.lastName} is now ${role === "admin" ? "an admin" : "security staff"}.`;
+    setMessage(error ? error.message : done); notify(error ? "error" : "success", error ? `Could not change the role. ${error.message}` : done); await load();
   };
   const resetPassword = async (person: Staff) => {
     if (!confirm(`Reset ${person.firstName} ${person.lastName}'s password to a new default password?`)) return;
     const password = defaultPassword(); const { error } = await supabase.rpc("reset_staff_password", { p_user_id: person.id, p_password: password });
-    if (error) { setMessage(error.message); return; }
+    if (error) { setMessage(error.message); notify("error", `Could not reset the password. ${error.message}`); return; }
+    notify("success", `${person.firstName} ${person.lastName}'s password was reset.`);
     setMessage(""); setHandover({ title: "Password reset", email: person.email, password }); await load();
   };
   const remove = async (person: Staff) => {
     if (!confirm(`Remove ${person.firstName} ${person.lastName}'s account? They will no longer be able to sign in.`)) return;
     const { error } = await supabase.rpc("delete_staff_account", { p_user_id: person.id });
-    setMessage(error ? error.message : "Staff account removed."); await load();
+    setMessage(error ? error.message : "Staff account removed."); notify(error ? "error" : "success", error ? `Could not remove the staff account. ${error.message}` : `${person.firstName} ${person.lastName}'s staff account was removed.`); await load();
   };
 
   return <div className="space-y-6">
@@ -89,8 +97,8 @@ export function StaffPage() {
       <label><span className="label">Last name</span><input required className="field" name="lastName"/></label>
       <label className="sm:col-span-2"><span className="label">Email address</span><input required type="email" className="field" name="email"/></label>
       <label><span className="label">Role</span><select className="field" name="role" defaultValue="admin"><option value="admin">Admin</option><option value="security">Security</option></select></label>
-      <label><span className="label">Default password</span><input required minLength={8} className="field font-mono" name="password" defaultValue={defaultPassword()}/></label>
-      <p className="rounded-lg bg-amber-50 p-3 text-sm text-amber-700 sm:col-span-2">Give this default password to the staff member privately. They will be asked to set their own password the first time they sign in.</p>
+      <label><span className="label">Default password</span><input required minLength={8} maxLength={72} type="password" autoComplete="new-password" className="field" name="password" placeholder="Type a default password (at least 8 characters)"/></label>
+      <p className="rounded-lg bg-amber-50 p-3 text-sm text-amber-700 sm:col-span-2">Type a default password and give it to the staff member privately. They will be asked to set their own password the first time they sign in.</p>
       {message && <p className="text-sm text-rose-600 sm:col-span-2">{message}</p>}
       <div className="flex justify-end gap-2 sm:col-span-2"><button type="button" className="btn-secondary" onClick={() => setAdding(false)}>Cancel</button><button className="btn-primary">Create account</button></div>
     </form></Modal>}

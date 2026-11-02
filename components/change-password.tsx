@@ -1,6 +1,7 @@
 "use client";
 
 import { useMemo, useState } from "react";
+import { useStore } from "@/lib/store";
 import { KeyRound } from "lucide-react";
 import { createClient } from "@/lib/supabase/client";
 import { LIMITS, passwordError } from "@/lib/validation";
@@ -9,6 +10,7 @@ import { LIMITS, passwordError } from "@/lib/validation";
 // and to residents arriving from a password reset email.
 export function ChangePassword({ onDone, onLogout, title = "Set your own password", description = "You signed in with a default password from the super admin. Choose a new password only you know before continuing." }: { onDone: () => void; onLogout: () => void; title?: string; description?: string }) {
   const supabase = useMemo(() => createClient(), []);
+  const { notify } = useStore();
   const [message, setMessage] = useState("");
   const [busy, setBusy] = useState(false);
 
@@ -19,9 +21,10 @@ export function ChangePassword({ onDone, onLogout, title = "Set your own passwor
     setBusy(true);
     try {
       const { error } = await supabase.auth.updateUser({ password });
-      if (error) { setMessage(error.message); return; }
+      if (error) { setMessage(error.message); notify("error", `Could not change the password. ${error.message}`); return; }
       const { error: flagError } = await supabase.rpc("clear_must_change_password");
       if (flagError) { setMessage(flagError.message); return; }
+      notify("success", "Your password was changed.");
       onDone();
     } finally { setBusy(false); }
   };
