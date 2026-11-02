@@ -3,15 +3,19 @@
 import { createContext, useCallback, useContext, useEffect, useMemo, useState } from "react";
 import { createClient } from "./supabase/client";
 import { Notice, NoticePopup, NoticeType } from "@/components/notice";
+import { notifyApi } from "./notify";
 import { Announcement, AppData, CommunityEvent, GateLog, Homeowner, Vehicle } from "./types";
+
+// Which channels to use when an announcement or event is also sent to residents.
+export type Channels = { email: boolean; sms: boolean };
 
 type Store = AppData & {
   loading: boolean;
   notify: (type: NoticeType, message: string) => void;
   saveHomeowner: (item: Homeowner) => void; deleteHomeowner: (id: string) => void;
   saveVehicle: (item: Vehicle) => void; deleteVehicle: (id: string) => void;
-  saveAnnouncement: (item: Announcement) => void; deleteAnnouncement: (id: string) => void;
-  saveEvent: (item: CommunityEvent) => void; deleteEvent: (id: string) => void;
+  saveAnnouncement: (item: Announcement, via?: Channels) => void; deleteAnnouncement: (id: string) => void;
+  saveEvent: (item: CommunityEvent, via?: Channels) => void; deleteEvent: (id: string) => void;
   addGateLog: (item: GateLog) => void;
 };
 
@@ -45,7 +49,7 @@ export function StoreProvider({ children }: { children: React.ReactNode }) {
       supabase.from("announcements").select("*").order("announcement_date", { ascending: false }),
       supabase.from("events").select("*").order("event_date"), supabase.from("gate_logs").select("*").order("created_at", { ascending: false }),
     ]);
-    const homeowners: Homeowner[] = (homeownersResult.data || []).map(row => ({ id: row.id, firstName: row.first_name, lastName: row.last_name, email: row.email, phone: row.phone || "", block: row.block, lot: row.lot, status: row.status, denialReason: row.denial_reason || "" }));
+    const homeowners: Homeowner[] = (homeownersResult.data || []).map(row => ({ id: row.id, firstName: row.first_name, lastName: row.last_name, email: row.email, phone: row.phone || "", block: row.block, lot: row.lot, status: row.status, denialReason: row.denial_reason || "", emailVerified: !!row.email_verified_at }));
     const vehicles: Vehicle[] = (vehiclesResult.data || []).map(row => ({ id: row.id, homeownerId: row.homeowner_id, plateNumber: row.plate_number, brand: row.brand, model: row.model, color: row.color, passNumber: row.pass_number || "Pending", status: row.status, expirationDate: row.expiration_date || "" }));
     const announcements: Announcement[] = (announcementsResult.data || []).map(row => ({ id: row.id, title: row.title, description: row.description, date: row.announcement_date, status: row.status }));
     const events: CommunityEvent[] = (eventsResult.data || []).map(row => ({ id: row.id, title: row.title, description: row.description, date: row.event_date, time: String(row.event_time).slice(0, 5), location: row.location }));
@@ -55,11 +59,39 @@ export function StoreProvider({ children }: { children: React.ReactNode }) {
 
   useEffect(() => { refresh(); const { data: listener } = supabase.auth.onAuthStateChange(() => refresh()); return () => listener.subscription.unsubscribe(); }, [refresh, supabase]);
   // Runs one change, then shows a pop-up saying whether it worked. An empty `success` stays silent.
-  const run = async (operation: PromiseLike<{ error: { message: string } | null }>, success: string, failure: string) => {
+  const run = async (operation: PromiseLike<{ error: { message: string } | null }>, success: string, failure: string, after?: () => Promise<void>) => {
     const { error } = await operation;
     if (error) { notify("error", `${failure}. ${friendlyError(error.message)}`); return; }
     if (success) notify("success", success);
     await refresh();
+    if (after) await after();
+  };
+  const accessToken = async () => (await supabase.auth.getSession()).data.session?.access_token;
+  const where = (channel: string, to: string) => (channel === "email" ? `email to ${to}` : `text message to ${to}`);
+
+  // Tells the resident (by email, or by text if they have no email) that their registration was approved or denied.
+  const sendStatusNotice = async (item: Homeowner) => {
+    const word = item.status === "denied" ? "denial" : "approval";
+    const result = await notifyApi({ action: "status", homeownerId: item.id }, await accessToken());
+    const sent: { channel: string; ok: boolean; to: string; error?: string }[] = Array.isArray(result.data?.results) ? result.data.results : [];
+    if (!sent.length) { notify("error", `The ${word} was saved, but the resident could not be notified. ${result.data?.error || "Please try again later."}`); return; }
+    for (const entry of sent) {
+      if (entry.ok) notify("success", `The ${word} ${where(entry.channel, entry.to)} was sent.`);
+      else notify("error", `The ${word} ${where(entry.channel, entry.to)} was not sent. ${entry.error || ""}`.trim());
+    }
+  };
+
+  // Sends an announcement or event to every active resident by the channels the admin ticked.
+  const sendBroadcast = async (payload: Record<string, unknown>, via: Channels) => {
+    const result = await notifyApi({ action: "broadcast", ...payload, channels: via }, await accessToken());
+    const d = result.data;
+    if (!d || typeof d.emailSent !== "number") { notify("error", `The residents could not be notified. ${d?.error || "Please try again later."}`); return; }
+    const parts: string[] = [];
+    if (via.email) parts.push(`${d.emailSent} ${d.emailSent === 1 ? "email" : "emails"}`);
+    if (via.sms) parts.push(`${d.smsSent} ${d.smsSent === 1 ? "text message" : "text messages"}`);
+    if (d.emailSent + d.smsSent > 0) notify("success", `Sent to residents: ${parts.join(" and ")}.`);
+    if (d.emailFailed + d.smsFailed > 0) notify("error", `${d.emailFailed + d.smsFailed} could not be delivered. ${d.error || ""}`.trim());
+    if (d.emailSent + d.smsSent + d.emailFailed + d.smsFailed === 0) notify("error", "There was nobody to notify (no active residents with an email or phone number).");
   };
   const personName = (item: { firstName: string; lastName: string }) => `${item.firstName} ${item.lastName}`.trim();
   const value: Store = { ...data, loading, notify,
@@ -71,7 +103,9 @@ export function StoreProvider({ children }: { children: React.ReactNode }) {
         : [`${name}'s record was updated.`, "Could not update the homeowner"];
       // The denial reason column is only touched when a registration is denied (or a denial is lifted).
       const reason = denied || before?.status === "denied" ? { denial_reason: denied ? (item.denialReason || "").trim() || null : null } : {};
-      void run(supabase.from("homeowners").upsert({ id: databaseId(item.id), first_name: item.firstName, last_name: item.lastName, email: item.email, phone: item.phone, block: item.block, lot: item.lot, status: item.status, ...reason }), success, failure);
+      const approvedNow = before?.status === "pending" && item.status === "active";
+      const deniedNow = denied && before?.status !== "denied";
+      void run(supabase.from("homeowners").upsert({ id: databaseId(item.id), first_name: item.firstName, last_name: item.lastName, email: item.email, phone: item.phone, block: item.block, lot: item.lot, status: item.status, ...reason }), success, failure, approvedNow || deniedNow ? () => sendStatusNotice(item) : undefined);
     },
     // Use the database function so deleting a resident also removes their linked
     // Supabase Auth login. A plain table delete would leave that login active.
@@ -84,9 +118,9 @@ export function StoreProvider({ children }: { children: React.ReactNode }) {
       void run(supabase.from("vehicles").upsert({ id: databaseId(item.id), homeowner_id: item.homeownerId, plate_number: item.plateNumber, brand: item.brand, model: item.model, color: item.color, pass_number: ["", "PENDING"].includes(item.passNumber.trim().toUpperCase()) ? null : item.passNumber, status: item.status, expiration_date: item.expirationDate || null }), success, failure);
     },
     deleteVehicle: id => { const target = data.vehicles.find(x => x.id === id); void run(supabase.from("vehicles").delete().eq("id", id), `Vehicle ${target?.plateNumber ?? ""} was deleted.`.replace("  ", " "), "Could not delete the vehicle"); },
-    saveAnnouncement: item => { const before = data.announcements.some(x => x.id === item.id); void run(supabase.from("announcements").upsert({ id: databaseId(item.id), title: item.title, description: item.description, announcement_date: item.date, status: item.status }), `Announcement "${item.title}" was ${before ? "updated" : "created"}.`, `Could not ${before ? "update" : "create"} the announcement`); },
+    saveAnnouncement: (item, via) => { const before = data.announcements.some(x => x.id === item.id); const send = via && (via.email || via.sms) && item.status === "published"; void run(supabase.from("announcements").upsert({ id: databaseId(item.id), title: item.title, description: item.description, announcement_date: item.date, status: item.status }), `Announcement "${item.title}" was ${before ? "updated" : "created"}.`, `Could not ${before ? "update" : "create"} the announcement`, send ? () => sendBroadcast({ kind: "announcement", title: item.title, description: item.description, date: item.date }, via as Channels) : undefined); },
     deleteAnnouncement: id => { const target = data.announcements.find(x => x.id === id); void run(supabase.from("announcements").delete().eq("id", id), target ? `Announcement "${target.title}" was deleted.` : "The announcement was deleted.", "Could not delete the announcement"); },
-    saveEvent: item => { const before = data.events.some(x => x.id === item.id); void run(supabase.from("events").upsert({ id: databaseId(item.id), title: item.title, description: item.description, event_date: item.date, event_time: item.time, location: item.location }), `Event "${item.title}" was ${before ? "updated" : "created"}.`, `Could not ${before ? "update" : "create"} the event`); },
+    saveEvent: (item, via) => { const before = data.events.some(x => x.id === item.id); const send = via && (via.email || via.sms); void run(supabase.from("events").upsert({ id: databaseId(item.id), title: item.title, description: item.description, event_date: item.date, event_time: item.time, location: item.location }), `Event "${item.title}" was ${before ? "updated" : "created"}.`, `Could not ${before ? "update" : "create"} the event`, send ? () => sendBroadcast({ kind: "event", title: item.title, description: item.description, date: item.date, time: item.time, location: item.location }, via as Channels) : undefined); },
     deleteEvent: id => { const target = data.events.find(x => x.id === id); void run(supabase.from("events").delete().eq("id", id), target ? `Event "${target.title}" was deleted.` : "The event was deleted.", "Could not delete the event"); },
     addGateLog: item => { void (async () => { const { data: userData } = await supabase.auth.getUser(); await run(supabase.from("gate_logs").insert({ homeowner_id: item.homeownerId || null, vehicle_id: item.vehicleId || null, verification_type: item.verificationType, status: item.status, verified_by: userData.user?.id || null }), "", "Could not record the gate log"); })(); },
   };

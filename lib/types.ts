@@ -1,5 +1,5 @@
 export type Role = "admin" | "security" | "homeowner";
-export type Homeowner = { id: string; firstName: string; lastName: string; email: string; phone: string; block: string; lot: string; status: "pending" | "active" | "inactive" | "denied"; denialReason?: string };
+export type Homeowner = { id: string; firstName: string; lastName: string; email: string; phone: string; block: string; lot: string; status: "pending" | "active" | "inactive" | "denied"; denialReason?: string; emailVerified?: boolean };
 export type Vehicle = { id: string; homeownerId: string; plateNumber: string; brand: string; model: string; color: string; passNumber: string; status: "pending" | "active" | "expired" | "suspended"; expirationDate: string };
 export type Announcement = { id: string; title: string; description: string; date: string; status: "published" | "draft" };
 export type CommunityEvent = { id: string; title: string; description: string; date: string; time: string; location: string };
