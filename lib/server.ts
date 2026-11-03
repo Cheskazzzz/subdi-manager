@@ -185,6 +185,26 @@ export const messages = {
     html: page("Your new verification code", [`Hi ${esc(first)},`, "Use this code to verify your email address:"], codeBox(code) + `<p style="margin:0;font-size:14px;color:#475569">The code works for ${CODE_MINUTES} minutes.</p>`),
     text: `Hi ${first},\n\nYour Isabel Village verification code is ${code}. It works for ${CODE_MINUTES} minutes.`,
   }),
+  reportReceived: (first: string, reference: string, subject: string, siteUrl: string) => ({
+    subject: `We received your report ${reference}`,
+    html: page("We received your report", [`Hi ${esc(first)},`, "Thank you for letting us know. Your report was recorded and the association office will look into it."], `<div style="margin:0 0 14px;padding:12px 14px;background:#f8fafc;border:1px solid #e2e8f0;border-radius:10px;font-size:14px;color:#334155"><b>Reference:</b> ${esc(reference)}<br><b>Subject:</b> ${esc(subject)}</div><p style="margin:0;font-size:14px;color:#475569">You will get an email when there is an update. You can follow it any time under <b>Reports</b> in the portal.</p>${button("Open Reports", siteUrl)}`),
+    text: `Hi ${first},\n\nThank you for letting us know. Your report was recorded and the association office will look into it.\n\nReference: ${reference}\nSubject: ${subject}\n\nYou will get an email when there is an update. You can follow it under Reports in the portal.${siteUrl ? `\n\n${siteUrl}` : ""}`,
+  }),
+  reportAlert: (who: string, address: string, category: string, reference: string, subject: string, siteUrl: string) => ({
+    subject: `New report ${reference}: ${subject}`,
+    html: page("A new report was filed", [`${esc(who)} (${esc(address)}) filed a new report.`], `<div style="margin:0 0 14px;padding:12px 14px;background:#f8fafc;border:1px solid #e2e8f0;border-radius:10px;font-size:14px;color:#334155"><b>Reference:</b> ${esc(reference)}<br><b>Category:</b> ${esc(category)}<br><b>Subject:</b> ${esc(subject)}</div><p style="margin:0;font-size:14px;color:#475569">Open the Reports tab to review it and reply.</p>${button("Open Reports", siteUrl)}`),
+    text: `${who} (${address}) filed a new report.\n\nReference: ${reference}\nCategory: ${category}\nSubject: ${subject}\n\nOpen the Reports tab to review it and reply.${siteUrl ? `\n\n${siteUrl}` : ""}`,
+  }),
+  reportStatus: (first: string, reference: string, subject: string, label: string, siteUrl: string) => ({
+    subject: `Your report ${reference} is now ${label.toLowerCase()}`,
+    html: page("Update on your report", [`Hi ${esc(first)},`, `The status of your report <b>${esc(reference)}</b> (${esc(subject)}) is now <b>${esc(label)}</b>.`, "Open Reports in the portal to read the details."], button("Open Reports", siteUrl)),
+    text: `Hi ${first},\n\nThe status of your report ${reference} (${subject}) is now ${label}.\nOpen Reports in the portal to read the details.${siteUrl ? `\n\n${siteUrl}` : ""}`,
+  }),
+  reportReply: (first: string, reference: string, subject: string, siteUrl: string) => ({
+    subject: `New reply on your report ${reference}`,
+    html: page("The association office replied", [`Hi ${esc(first)},`, `There is a new reply on your report <b>${esc(reference)}</b> (${esc(subject)}).`, "Open Reports in the portal to read it and answer."], button("Open Reports", siteUrl)),
+    text: `Hi ${first},\n\nThere is a new reply on your report ${reference} (${subject}).\nOpen Reports in the portal to read it and answer.${siteUrl ? `\n\n${siteUrl}` : ""}`,
+  }),
   registrationSms: (first: string) => `Isabel Village: Hi ${first}, we received your registration. We will text you once the association office approves it.`,
   approved: (first: string, siteUrl: string) => ({
     subject: "Your Isabel Village registration was approved",
@@ -364,4 +384,87 @@ export async function broadcast(request: Request, body: Record<string, unknown>)
   if (wantEmail) await writeLog(null, kind, "email", counts.emailFailed === 0, `sent ${counts.emailSent}, failed ${counts.emailFailed}: ${title}`);
   if (wantSms) await writeLog(null, kind, "sms", counts.smsFailed === 0, `sent ${counts.smsSent}, failed ${counts.smsFailed}: ${title}`);
   return reply(200, { ok: counts.emailSent + counts.smsSent > 0 || (emailTargets.length + smsTargets.length === 0), ...counts, emailRecipients: emailTargets.length, smsRecipients: smsTargets.length, ...(firstError ? { error: firstError } : {}) });
+}
+
+// ------------------------------------------------------------- reports ---
+
+const CATEGORY_LABELS: Record<string, string> = { security: "Security", maintenance: "Maintenance", noise: "Noise or nuisance", car_pass: "Car pass or gate", other: "Other" };
+const STATUS_LABELS: Record<string, string> = { submitted: "Submitted", review: "Under review", resolved: "Resolved", closed: "Closed" };
+
+type ReportRow = { id: string; reference: string; homeowner_id: string; category: string; subject: string; status: string; created_at: string };
+type Owner = { id: string; user_id: string | null; first_name: string; last_name: string; email: string; phone: string | null; block: string; lot: string };
+
+async function reportWithOwner(reportId: string): Promise<{ report: ReportRow; owner: Owner } | null> {
+  if (!/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(reportId)) return null;
+  const found = await rest(`reports?id=eq.${reportId}&select=id,reference,homeowner_id,category,subject,status,created_at&limit=1`);
+  const report = found.ok && found.data?.[0] ? (found.data[0] as ReportRow) : null;
+  if (!report) return null;
+  const person = await rest(`homeowners?id=eq.${report.homeowner_id}&select=id,user_id,first_name,last_name,email,phone,block,lot&limit=1`);
+  const owner = person.ok && person.data?.[0] ? (person.data[0] as Owner) : null;
+  return owner ? { report, owner } : null;
+}
+
+// Any signed-in person: returns their user id, or null when the token is missing or invalid.
+async function signedInUserId(request: Request): Promise<string | null> {
+  const c = config();
+  const token = (request.headers.get("authorization") || "").replace(/^Bearer\s+/i, "").trim();
+  if (!token) return null;
+  try {
+    const response = await fetch(`${c.supabaseUrl}/auth/v1/user`, { headers: { apikey: c.anonKey, authorization: `Bearer ${token}` }, cache: "no-store" });
+    if (!response.ok) return null;
+    return String(((await response.json()) as { id?: string }).id || "") || null;
+  } catch { return null; }
+}
+
+// Right after a resident files a report: confirm it to them by email and alert the admins. Works once per report.
+export async function reportFiled(request: Request, body: Record<string, unknown>): Promise<Reply> {
+  if (!serverReady()) return notReady();
+  const userId = await signedInUserId(request);
+  if (!userId) return reply(401, { ok: false, error: "Please sign in again." });
+  const found = await reportWithOwner(String(body.reportId || ""));
+  if (!found || found.owner.user_id !== userId) return reply(404, { ok: false, error: "That report was not found." });
+  const { report, owner } = found;
+  if (Date.parse(report.created_at) < Date.now() - 15 * 60_000) return reply(200, { ok: true, results: [] });
+  const done = await rest(`notification_log?kind=eq.report_filed&detail=eq.${encodeURIComponent(report.reference)}&ok=eq.true&select=id&limit=1`);
+  if (done.ok && done.data?.length) return reply(200, { ok: true, results: [] });
+
+  const siteUrl = config().siteUrl;
+  const results: Delivery[] = [];
+  if (!isPlaceholder(owner.email)) {
+    const mail = messages.reportReceived(owner.first_name, report.reference, report.subject, siteUrl);
+    const sent = await sendEmail({ email: owner.email, name: `${owner.first_name} ${owner.last_name}`.trim() }, mail.subject, mail.html, mail.text);
+    results.push({ channel: "email", ok: sent.ok, to: owner.email, ...(sent.ok ? {} : { error: sent.error }) });
+  }
+  // Tell the admins too, so a new report is never missed.
+  const admins = await rest("profiles?role=eq.admin&select=email,first_name&limit=50");
+  const alert = messages.reportAlert(`${owner.first_name} ${owner.last_name}`.trim(), `Block ${owner.block}, Lot ${owner.lot}`, CATEGORY_LABELS[report.category] || report.category, report.reference, report.subject, siteUrl);
+  let alerted = 0;
+  if (admins.ok && Array.isArray(admins.data)) {
+    await inBatches(admins.data as { email: string; first_name: string }[], 5, async admin => {
+      const sent = await sendEmail({ email: admin.email, name: admin.first_name }, alert.subject, alert.html, alert.text);
+      if (sent.ok) alerted++;
+    });
+  }
+  await writeLog(owner.id, "report_filed", "email", results.some(r => r.ok) || alerted > 0, report.reference);
+  return reply(200, { ok: results.some(r => r.ok) || alerted > 0, results, adminsAlerted: alerted });
+}
+
+// After an admin changes a report's status or replies: tell the resident by email.
+export async function reportUpdated(request: Request, body: Record<string, unknown>): Promise<Reply> {
+  if (!serverReady()) return notReady();
+  const blocked = await requireAdmin(request);
+  if (blocked) return blocked;
+  const event = body.event === "reply" ? "reply" : body.event === "status" ? "status" : "";
+  const found = await reportWithOwner(String(body.reportId || ""));
+  if (!event || !found) return reply(404, { ok: false, error: "That report was not found." });
+  const { report, owner } = found;
+  if (event === "status" && report.status === "submitted") return reply(200, { ok: true, results: [] });
+  if (isPlaceholder(owner.email)) return reply(200, { ok: true, results: [], note: "This resident has no email address, so they will see the update when they sign in." });
+  const siteUrl = config().siteUrl;
+  const mail = event === "status"
+    ? messages.reportStatus(owner.first_name, report.reference, report.subject, STATUS_LABELS[report.status] || report.status, siteUrl)
+    : messages.reportReply(owner.first_name, report.reference, report.subject, siteUrl);
+  const sent = await sendEmail({ email: owner.email, name: `${owner.first_name} ${owner.last_name}`.trim() }, mail.subject, mail.html, mail.text);
+  await writeLog(owner.id, `report_${event}`, "email", sent.ok, sent.ok ? report.reference : sent.error);
+  return reply(200, { ok: sent.ok, results: [{ channel: "email", ok: sent.ok, to: owner.email, ...(sent.ok ? {} : { error: sent.error }) }] });
 }
