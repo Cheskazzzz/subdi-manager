@@ -1,4 +1,12 @@
-import { broadcast, registrationNotice, resendCode, statusNotice, verifyEmail } from "@/lib/server";
+// One endpoint for every notification action. The real work (and every secret) lives in lib/server.ts.
+//   registration  public  right after registering: email the verification code / text a confirmation
+//   verify        public  check the 6-digit email code
+//   resend        public  send a new email code
+//   status        admin   tell a resident their registration was approved or denied
+//   broadcast     admin   send an announcement or event by email and/or SMS
+//   report_filed  signed-in resident  confirm a new report and alert the admins
+//   report_update admin   tell the resident their report changed or was answered
+import { broadcast, registrationNotice, reportFiled, reportUpdated, resendCode, statusNotice, verifyEmail } from "@/lib/server";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -13,6 +21,8 @@ export async function POST(request: Request) {
     : body.action === "resend" ? await resendCode(body)
     : body.action === "status" ? await statusNotice(request, body)
     : body.action === "broadcast" ? await broadcast(request, body)
+    : body.action === "report_filed" ? await reportFiled(request, body)
+    : body.action === "report_update" ? await reportUpdated(request, body)
     : { status: 400, body: { ok: false, error: "Unknown action." } };
   return Response.json(result.body, { status: result.status });
 }
