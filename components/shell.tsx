@@ -3,9 +3,9 @@
 import { Role } from "@/lib/types";
 import { useState } from "react";
 import { useUnread } from "@/lib/unread";
-import { Building2, CalendarDays, Car, ClipboardList, Home, LayoutDashboard, LogOut, Megaphone, Menu, ScanFace, ShieldCheck, UserCog, UserRound, Users, X } from "lucide-react";
+import { Building2, CalendarDays, Car, ClipboardList, FileText, Home, LayoutDashboard, LogOut, Megaphone, Menu, ScanFace, ShieldCheck, UserCog, UserRound, Users, X } from "lucide-react";
 
-export type PageKey = "dashboard" | "homeowners" | "vehicles" | "verify" | "logs" | "announcements" | "events" | "facial" | "profile" | "my-vehicles" | "staff";
+export type PageKey = "dashboard" | "homeowners" | "vehicles" | "verify" | "logs" | "announcements" | "events" | "reports" | "facial" | "profile" | "my-vehicles" | "staff";
 const allItems: { key: PageKey; label: string; icon: typeof Home; roles: Role[]; superAdminOnly?: boolean }[] = [
   { key: "dashboard", label: "Dashboard", icon: LayoutDashboard, roles: ["admin", "homeowner"] },
   { key: "homeowners", label: "Homeowners", icon: Users, roles: ["admin"] },
@@ -16,6 +16,7 @@ const allItems: { key: PageKey; label: string; icon: typeof Home; roles: Role[];
   { key: "my-vehicles", label: "My Vehicles", icon: Car, roles: ["homeowner"] },
   { key: "announcements", label: "Announcements", icon: Megaphone, roles: ["admin", "homeowner"] },
   { key: "events", label: "Events", icon: CalendarDays, roles: ["admin", "homeowner"] },
+  { key: "reports", label: "Reports", icon: FileText, roles: ["admin", "homeowner"] },
   { key: "facial", label: "Facial Recognition", icon: ScanFace, roles: ["admin", "security"] },
   { key: "staff", label: "Staff Accounts", icon: UserCog, roles: ["admin"], superAdminOnly: true },
 ];
