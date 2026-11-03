@@ -10,6 +10,7 @@ import { MyVehicles, VehiclesPage } from "@/components/vehicles";
 import { GateLogsPage, VerifyPage } from "@/components/security";
 import { AnnouncementsPage, EventsPage } from "@/components/community";
 import { FacialRecognitionPage } from "@/components/facial-recognition";
+import { ReportsPage } from "@/components/reports";
 import { ProfilePage } from "@/components/profile";
 import { StaffPage } from "@/components/staff";
 import { ChangePassword } from "@/components/change-password";
@@ -53,4 +54,4 @@ function App(){
   if(account.mustChangePassword)return <ChangePassword onDone={()=>setAccount({...account,mustChangePassword:false})} onLogout={()=>{void logout()}}/>;
   return <UnreadProvider userId={account.id} enabled={role==="homeowner"}><Shell role={role} name={account.name} superAdmin={account.superAdmin} page={page} setPage={setPage} logout={()=>{void logout()}}><Page role={role} page={page} superAdmin={account.superAdmin}/></Shell></UnreadProvider>
 }
-function Page({role,page,superAdmin}:{role:Role;page:PageKey;superAdmin:boolean}){switch(page){case"dashboard":return role==="homeowner"?<ResidentDashboard/>:<AdminDashboard/>;case"homeowners":return <HomeownersPage/>;case"vehicles":return <VehiclesPage/>;case"verify":return <VerifyPage/>;case"logs":return <GateLogsPage/>;case"announcements":return <AnnouncementsPage role={role}/>;case"events":return <EventsPage role={role}/>;case"facial":return <FacialRecognitionPage/>;case"profile":return <ProfilePage/>;case"my-vehicles":return <MyVehicles/>;case"staff":return superAdmin?<StaffPage/>:null;default:return null}}
+function Page({role,page,superAdmin}:{role:Role;page:PageKey;superAdmin:boolean}){switch(page){case"dashboard":return role==="homeowner"?<ResidentDashboard/>:<AdminDashboard/>;case"homeowners":return <HomeownersPage/>;case"vehicles":return <VehiclesPage/>;case"verify":return <VerifyPage/>;case"logs":return <GateLogsPage/>;case"announcements":return <AnnouncementsPage role={role}/>;case"events":return <EventsPage role={role}/>;case"reports":return <ReportsPage role={role}/>;case"facial":return <FacialRecognitionPage/>;case"profile":return <ProfilePage/>;case"my-vehicles":return <MyVehicles/>;case"staff":return superAdmin?<StaffPage/>:null;default:return null}}
