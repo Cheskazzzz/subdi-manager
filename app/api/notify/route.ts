@@ -6,7 +6,9 @@
 //   broadcast     admin   send an announcement or event by email and/or SMS
 //   report_filed  signed-in resident  confirm a new report and alert the admins
 //   report_update admin   tell the resident their report changed or was answered
-import { broadcast, registrationNotice, reportFiled, reportUpdated, resendCode, statusNotice, verifyEmail } from "@/lib/server";
+//   staff_create  super admin  create a staff account; the system emails the temporary password
+//   staff_reset   super admin  reset a staff password; the system emails the new temporary password
+import { broadcast, registrationNotice, reportFiled, reportUpdated, resendCode, staffCreate, staffReset, statusNotice, verifyEmail } from "@/lib/server";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -23,6 +25,8 @@ export async function POST(request: Request) {
     : body.action === "broadcast" ? await broadcast(request, body)
     : body.action === "report_filed" ? await reportFiled(request, body)
     : body.action === "report_update" ? await reportUpdated(request, body)
+    : body.action === "staff_create" ? await staffCreate(request, body)
+    : body.action === "staff_reset" ? await staffReset(request, body)
     : { status: 400, body: { ok: false, error: "Unknown action." } };
   return Response.json(result.body, { status: result.status });
 }
