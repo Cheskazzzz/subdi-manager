@@ -205,6 +205,11 @@ export const messages = {
     html: page("The association office replied", [`Hi ${esc(first)},`, `There is a new reply on your report <b>${esc(reference)}</b> (${esc(subject)}).`, "Open Reports in the portal to read it and answer."], button("Open Reports", siteUrl)),
     text: `Hi ${first},\n\nThere is a new reply on your report ${reference} (${subject}).\nOpen Reports in the portal to read it and answer.${siteUrl ? `\n\n${siteUrl}` : ""}`,
   }),
+  staffAccess: (first: string, email: string, password: string, siteUrl: string, created: boolean) => ({
+    subject: created ? "Your Isabel Village staff account" : "Your Isabel Village password was reset",
+    html: page(created ? "Your staff account is ready" : "Your password was reset", [`Hi ${esc(first)},`, created ? "A staff account was created for you on the Isabel Village portal. Sign in with these details:" : "The super admin reset your password. Sign in with these details:"], `<div style="margin:0 0 14px;padding:12px 14px;background:#f8fafc;border:1px solid #e2e8f0;border-radius:10px;font-size:14px;color:#334155"><b>Email:</b> ${esc(email)}<br><b>Temporary password:</b></div>${codeBox(password)}<p style="margin:0 0 14px;font-size:14px;color:#475569">This password is temporary. The first time you sign in you will be asked to choose your own password. Do not share this email with anyone, and delete it once you have changed your password.</p>${button("Sign in", siteUrl)}`),
+    text: `Hi ${first},\n\n${created ? "A staff account was created for you on the Isabel Village portal." : "The super admin reset your password."}\n\nEmail: ${email}\nTemporary password: ${password}\n\nThis password is temporary. The first time you sign in you will be asked to choose your own password. Do not share this email, and delete it once you have changed your password.${siteUrl ? `\n\n${siteUrl}` : ""}`,
+  }),
   registrationSms: (first: string) => `Isabel Village: Hi ${first}, we received your registration. We will text you once the association office approves it.`,
   approved: (first: string, siteUrl: string) => ({
     subject: "Your Isabel Village registration was approved",
@@ -467,4 +472,66 @@ export async function reportUpdated(request: Request, body: Record<string, unkno
   const sent = await sendEmail({ email: owner.email, name: `${owner.first_name} ${owner.last_name}`.trim() }, mail.subject, mail.html, mail.text);
   await writeLog(owner.id, `report_${event}`, "email", sent.ok, sent.ok ? report.reference : sent.error);
   return reply(200, { ok: sent.ok, results: [{ channel: "email", ok: sent.ok, to: owner.email, ...(sent.ok ? {} : { error: sent.error }) }] });
+}
+
+// ------------------------------------------------------- staff accounts ---
+
+// The system makes the temporary password. It is never typed in by a person; it is emailed to the staff member.
+// No 0/O or 1/l/I, so it can be read without mix-ups. Always has an upper-case letter, a lower-case letter and a digit.
+const PASSWORD_CHARS = "ABCDEFGHJKLMNPQRSTUVWXYZabcdefghjkmnpqrstuvwxyz23456789";
+export function generatePassword(length = 12): string {
+  for (;;) {
+    let value = "";
+    for (let i = 0; i < length; i++) value += PASSWORD_CHARS[randomInt(0, PASSWORD_CHARS.length)];
+    if (/[A-Z]/.test(value) && /[a-z]/.test(value) && /[2-9]/.test(value)) return value;
+  }
+}
+
+// Runs a database function as the signed-in admin, so the database itself still checks "only the super admin may do this".
+async function rpcAsUser(request: Request, name: string, args: Record<string, unknown>): Promise<{ ok: true } | { ok: false; status: number; error: string }> {
+  const c = config();
+  const token = (request.headers.get("authorization") || "").replace(/^Bearer\s+/i, "").trim();
+  if (!token) return { ok: false, status: 401, error: "Please sign in again." };
+  try {
+    const response = await fetch(`${c.supabaseUrl}/rest/v1/rpc/${name}`, { method: "POST", headers: { apikey: c.anonKey, authorization: `Bearer ${token}`, "content-type": "application/json" }, body: JSON.stringify(args), cache: "no-store" });
+    if (response.ok) return { ok: true };
+    let error = "";
+    try { error = String(((await response.json()) as { message?: string }).message || ""); } catch { /* empty body */ }
+    return { ok: false, status: response.status === 401 ? 401 : 400, error: error || `The database refused the request (status ${response.status}).` };
+  } catch { return { ok: false, status: 502, error: "Could not reach the database." }; }
+}
+
+// Super admin adds a staff account: the system makes the password and emails it to the new staff member.
+// The password is only sent back to the browser when the email could not be delivered, so the admin can hand it over instead.
+export async function staffCreate(request: Request, body: Record<string, unknown>): Promise<Reply> {
+  if (!serverReady()) return notReady();
+  const email = String(body.email || "").trim().toLowerCase();
+  const firstName = String(body.firstName || "").trim().slice(0, 100);
+  const lastName = String(body.lastName || "").trim().slice(0, 100);
+  const role = body.role === "security" ? "security" : body.role === "admin" ? "admin" : "";
+  if (!/^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(email) || !firstName || !lastName || !role) return reply(400, { ok: false, error: "Enter the first name, last name, a valid email address and a role." });
+  const password = generatePassword();
+  const made = await rpcAsUser(request, "create_staff_account", { p_email: email, p_password: password, p_first_name: firstName, p_last_name: lastName, p_role: role });
+  if (!made.ok) return reply(made.status, { ok: false, error: made.error });
+  const mail = messages.staffAccess(firstName, email, password, config().siteUrl, true);
+  const sent = await sendEmail({ email, name: `${firstName} ${lastName}` }, mail.subject, mail.html, mail.text);
+  await writeLog(null, "staff_created", "email", sent.ok, sent.ok ? email : `${email}: ${sent.error}`);
+  return reply(200, { ok: true, emailed: sent.ok, to: email, ...(sent.ok ? {} : { error: sent.error, password }) });
+}
+
+// Super admin resets a staff password: a new system-made password is emailed to that staff member.
+export async function staffReset(request: Request, body: Record<string, unknown>): Promise<Reply> {
+  if (!serverReady()) return notReady();
+  const userId = String(body.userId || "");
+  if (!/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(userId)) return reply(400, { ok: false, error: "That staff account was not found." });
+  const found = await rest(`profiles?id=eq.${userId}&select=email,first_name&limit=1`);
+  const person = found.ok && found.data?.[0] ? (found.data[0] as { email: string; first_name: string }) : null;
+  if (!person) return reply(404, { ok: false, error: "That staff account was not found." });
+  const password = generatePassword();
+  const made = await rpcAsUser(request, "reset_staff_password", { p_user_id: userId, p_password: password });
+  if (!made.ok) return reply(made.status, { ok: false, error: made.error });
+  const mail = messages.staffAccess(person.first_name, person.email, password, config().siteUrl, false);
+  const sent = await sendEmail({ email: person.email, name: person.first_name }, mail.subject, mail.html, mail.text);
+  await writeLog(null, "staff_reset", "email", sent.ok, sent.ok ? person.email : `${person.email}: ${sent.error}`);
+  return reply(200, { ok: true, emailed: sent.ok, to: person.email, ...(sent.ok ? {} : { error: sent.error, password }) });
 }
